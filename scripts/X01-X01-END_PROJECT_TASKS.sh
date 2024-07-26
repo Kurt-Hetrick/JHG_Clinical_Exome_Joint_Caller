@@ -27,18 +27,22 @@
 	ALIGNMENT_CONTAINER=$1
 	CORE_PATH=$2
 
-	PROJECT=$3
-	OUTPUT_DIR=$4
+	OUTPUT_DIR=$3
 
-	SCRIPT_DIR=$5
-	SUBMITTER_ID=$6
-	SAMPLE_SHEET=$7
+	SCRIPT_DIR=$4
+	SUBMITTER_ID=$5
+	SAMPLE_SHEET=$6
 		SAMPLE_SHEET_NAME=$(basename ${SAMPLE_SHEET} .csv)
 		SAMPLE_SHEET_FILE_NAME=$(basename ${SAMPLE_SHEET})
-	PED_FILE=$8
-	SUBMIT_STAMP=$9
-	SEND_TO=${10}
-	THREADS=${11}
+	PED_FILE=$7
+		PED_PREFIX=$(basename ${PED_FILE} .ped)
+	SUBMIT_STAMP=$8
+	SEND_TO=$9
+	THREADS=${10}
+
+	# create variables using the base name for the sample sheet and ped file
+
+		PED_PREFIX=$(basename ${PED_FILE} .ped)
 
 	# create a time stamp to incorporate into output file names
 
@@ -54,6 +58,7 @@
 
 	for SM_TAG in $(awk 1 ${SAMPLE_SHEET} \
 			| sed 's/\r//g; /^$/d; /^[[:space:]]*$/d; /^,/d' \
+			| awk 'NR>1' \
 			| awk 'BEGIN {FS=","} \
 				{print $8}' \
 			| sort \
@@ -244,7 +249,34 @@
 			{print $0}' \
 	| sed 's/ /,/g' \
 	| sed 's/\t/,/g' \
-	>| ${CORE_PATH}/${OUTPUT_DIR}/REPORTS/${PROJECT}.QC_REPORT.${TIMESTAMP}.csv
+	>| ${CORE_PATH}/${OUTPUT_DIR}/REPORTS/${OUTPUT_DIR}.QC_REPORT.${TIMESTAMP}.csv
+
+
+######################################################
+# create sample array to map sm tag to original data #
+######################################################
+
+	CREATE_SAMPLE_ARRAY ()
+	{
+		SAMPLE_ARRAY=(`awk 'BEGIN {FS="\t"; OFS="\t"} \
+			$8=="'${SAMPLE}'" \
+			{print $1,$8,$20}' \
+		~/JOINT_CALL_TEMP/${SAMPLE_SHEET_NAME}.${PED_PREFIX}.join.txt \
+			| sort \
+			| uniq`)
+
+			#  1  Project=the Seq Proj folder name
+
+				PROJECT=${SAMPLE_ARRAY[0]}
+
+			#  8  SM_Tag=sample ID
+
+				SM_TAG=${SAMPLE_ARRAY[1]}
+
+			# 20 family that sample belongs to
+
+				FAMILY=${SAMPLE_ARRAY[2]}
+	}
 
 ###############################################
 # Concatenate all aneuploidy reports together #
@@ -252,13 +284,19 @@
 # TO DO CONCATENATE WITH THE CONTROLS...might not do this since this isn't used #
 #################################################################################
 
-	( cat ${CORE_PATH}/${PROJECT}/*/*/REPORTS/ANEUPLOIDY_CHECK/*.chrom_count_report.txt \
-		| grep "^SM_TAG" \
-		| uniq ; \
-	cat ${CORE_PATH}/${PROJECT}/*/*/REPORTS/ANEUPLOIDY_CHECK/*.chrom_count_report.txt \
-		| grep -v "SM_TAG" ) \
-		| sed 's/\t/,/g' \
-	>| ${CORE_PATH}/${OUTPUT_DIR}/REPORTS/${OUTPUT_DIR}.ANEUPLOIDY_CHECK.${TIMESTAMP}.csv
+	MAKE_ANEUPLOIDY_HEADER ()
+	{
+		echo "SM_TAG,CHROM,ARM,TOTAL_COVERAGE,TOTAL_TARGETS,MEAN_DEPTH,NORM_DEPTH" \
+		>| ${CORE_PATH}/${OUTPUT_DIR}/REPORTS/${OUTPUT_DIR}.ANEUPLOIDY_CHECK.${TIMESTAMP}.csv
+	}
+
+	GRAB_ANEUPLOIDY_DATA ()
+	{
+		cat ${CORE_PATH}/${PROJECT}/${FAMILY}/${SM_TAG}/REPORTS/ANEUPLOIDY_CHECK/${SM_TAG}.chrom_count_report.txt \
+			| grep -v "SM_TAG" \
+			| sed 's/\t/,/g' \
+		>> ${CORE_PATH}/${OUTPUT_DIR}/REPORTS/${OUTPUT_DIR}.ANEUPLOIDY_CHECK.${TIMESTAMP}.csv
+	}
 
 ###############################################################
 # Concatenate all per chromosome verifybamID reports together #
@@ -266,20 +304,38 @@
 # TO DO CONCATENATE WITH THE CONTROLS...might not do this since this isn't used #
 #################################################################################
 
-	( cat ${CORE_PATH}/${PROJECT}/*/*/REPORTS/VERIFYBAMID_AUTO/*.VERIFYBAMID.PER_AUTOSOME.txt \
-		| grep "^#" \
-		| uniq ; \
-	cat ${CORE_PATH}/${PROJECT}/*/*/REPORTS/VERIFYBAMID_AUTO/*.VERIFYBAMID.PER_AUTOSOME.txt \
-		| grep -v "^#" ) \
-		| sed 's/\t/,/g; s/ /,/g' \
-	>| ${CORE_PATH}/${OUTPUT_DIR}/REPORTS/${OUTPUT_DIR}.PER_AUTOSOME_VERIFYBAMID.${TIMESTAMP}.csv
+	MAKE_VERIFYBAMID_CHR_HEADER ()
+	{
+		echo "#SM_TAG,CHROM,VERIFYBAM_FREEMIX,VERIFYBAM_SNPS,VERIFYBAM_FREELK1,VERRIFYBAM_FREELK0,VERIFYBAM_AVG_DP" \
+		>| ${CORE_PATH}/${OUTPUT_DIR}/REPORTS/${OUTPUT_DIR}.PER_AUTOSOME_VERIFYBAMID.${TIMESTAMP}.csv
+	}
+
+	GRAB_VERIFYBAMID_CHR_DATA ()
+	{
+		cat ${CORE_PATH}/${PROJECT}/${FAMILY}/${SM_TAG}/REPORTS/VERIFYBAMID_AUTO/${SM_TAG}.VERIFYBAMID.PER_AUTOSOME.txt \
+			| grep -v "^#" \
+			| sed 's/\t/,/g; s/ /,/g' \
+		>> ${CORE_PATH}/${OUTPUT_DIR}/REPORTS/${OUTPUT_DIR}.PER_AUTOSOME_VERIFYBAMID.${TIMESTAMP}.csv
+	}
 
 ################################################################################################
 # grab out MEAN_TARGET_COVERAGE,ZERO_CVG_TARGETS_PCT,PCT_TARGET_BASES_20X,PCT_TARGET_BASES_50X #
 # for all samples and place in TEMP ############################################################
 ################################################################################################
 
-	for SM_TAG in $(awk 1 ${SAMPLE_SHEET} \
+	GRAB_SHORT_COVERAGE_SUMMARY ()
+	{
+		awk 'BEGIN {FS="\t";OFS=","} \
+			NR==8 \
+			{print "'${SM_TAG}'",$23,$29*100,$39*100,$42*100}' \
+		${CORE_PATH}/${PROJECT}/${FAMILY}/${SM_TAG}/REPORTS/HYB_SELECTION/${SM_TAG}_hybridization_selection_metrics.txt \
+		>> ${CORE_PATH}/${OUTPUT_DIR}/TEMP/${OUTPUT_DIR}.SUMMARY_COVERAGE.csv
+	}
+
+MAKE_ANEUPLOIDY_HEADER
+MAKE_VERIFYBAMID_CHR_HEADER
+
+	for SAMPLE in $(awk 1 ${SAMPLE_SHEET} \
 			| sed 's/\r//g; /^$/d; /^[[:space:]]*$/d; /^,/d' \
 			| awk 'BEGIN {FS=","} \
 				NR>1 \
@@ -287,16 +343,15 @@
 			| sort \
 			| uniq );
 	do
-		awk 'BEGIN {FS="\t";OFS=","} \
-			NR==8 \
-			{print "'${SM_TAG}'",$23,$29*100,$39*100,$42*100}' \
-		${CORE_PATH}/${PROJECT}/*/${SM_TAG}/REPORTS/HYB_SELECTION/${SM_TAG}_hybridization_selection_metrics.txt
-	done \
-	>| ${CORE_PATH}/${OUTPUT_DIR}/TEMP/${PROJECT}.SUMMARY_COVERAGE.csv
+		CREATE_SAMPLE_ARRAY
+		GRAB_ANEUPLOIDY_DATA
+		GRAB_VERIFYBAMID_CHR_DATA
+		GRAB_SHORT_COVERAGE_SUMMARY
+	done
 
-##########################################################################################################
-# for each family grab out summary coverage metrics above, add header and write to file in family folder #
-##########################################################################################################
+# ##########################################################################################################
+# # for each family grab out summary coverage metrics above, add header and write to file in family folder #
+# ##########################################################################################################
 
 	for FAMILY in $(awk 1 ${PED_FILE} \
 			| sed 's/\r//g' \
@@ -307,17 +362,8 @@
 		echo -e SAMPLE,MEAN_TARGET_COVERAGE,ZERO_CVG_TARGETS_PCT,PCT_TARGET_BASES_20X,PCT_TARGET_BASES_50X\
 		>| ${CORE_PATH}/${OUTPUT_DIR}/${FAMILY}/${FAMILY}.SUMMARY_COVERAGE.csv
 
-		for SM_TAG in $(awk 1 ${PED_FILE} \
-				| sed 's/\r//g' \
-				| awk '$1=="'${FAMILY}'" \
-					{print $2}')
-		do
-			awk 'BEGIN {FS=",";OFS=","} \
-				$1=="'${SM_TAG}'" \
-				{print $0}' \
-			${CORE_PATH}/${OUTPUT_DIR}/TEMP/${PROJECT}.SUMMARY_COVERAGE.csv \
-			>> ${CORE_PATH}/${OUTPUT_DIR}/${FAMILY}/${FAMILY}.SUMMARY_COVERAGE.csv
-		done
+		cat ${CORE_PATH}/${OUTPUT_DIR}/TEMP/${OUTPUT_DIR}.SUMMARY_COVERAGE.csv \
+		>> ${CORE_PATH}/${OUTPUT_DIR}/${FAMILY}/${FAMILY}.SUMMARY_COVERAGE.csv
 	done
 
 ##############################################################
